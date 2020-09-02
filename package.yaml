@@ -1,0 +1,31 @@
+name: horrsubs
+version: '0.1.0.0'
+category: Web
+author: Faris Nasution
+maintainer: funyako.funyao156@gmail.com
+copyright: 2020 Faris Nasution
+license: BSD3
+github: farismn/horrsubs
+extra-source-files:
+- README.md
+
+default-extensions:
+  - OverloadedStrings
+
+dependencies:
+  - base
+
+library:
+  source-dirs: src
+  dependencies:
+  - attoparsec
+  - bytestring
+  - text
+  - process
+  ghc-options:
+  - -Wall
+  - -Wcompat
+  - -Werror
+  - -Wincomplete-record-updates
+  - -Wincomplete-uni-patterns
+  - -Wredundant-constraints
