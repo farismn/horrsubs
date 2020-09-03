@@ -1,2 +1,2 @@
-((nil . ((dante-target . "qahira")
+((nil . ((dante-target . "horrsubs")
          (dante-methods . (new-nix)))))
