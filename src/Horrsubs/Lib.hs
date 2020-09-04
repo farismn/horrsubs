@@ -1,8 +1,5 @@
 module Horrsubs.Lib
-  ( fetchMkvPaths
-  , makeVideoProperty
-  , extractSubtitles
-  , exampleTargetFolder
+  ( extractVideoSubtitles
   ) where
 
 import           Control.Applicative
@@ -63,30 +60,61 @@ data VideoTrackTag = VideoTrackTag
 
 data TrackKind = Video | Audio | Subtitles deriving (Show)
 
-fetchMkvPaths :: FilePath -> IO [FilePath]
-fetchMkvPaths path = fmap appendRootPath
-  . filterMkv
-  . concat
-  . toMaybe <$> fetchedPaths
+extractVideoSubtitles :: FilePath -> IO ()
+extractVideoSubtitles filePath = do
+  isFileExist <- doesFileExist filePath
+  if isFileExist
+    then extractVideoSubtitlesFromFile filePath
+    else do
+    isDirectoryExist <- doesDirectoryExist filePath
+    if isDirectoryExist
+      then extractVideoSubtitlesFromDirectory filePath
+      else return ()
+
+extractVideoSubtitlesFromFile :: FilePath -> IO ()
+extractVideoSubtitlesFromFile filePath = do
+  videoProp <- makeVideoProperty filePath
+  case videoProp of
+    Nothing         -> return ()
+    Just videoProp' -> extractSubtitles videoProp'
+
+extractVideoSubtitlesFromDirectory :: FilePath -> IO ()
+extractVideoSubtitlesFromDirectory filePath = do
+  paths <- fetchPathsFromDirectory filePath
+  videoProps <- catMaybes <$> mapM makeVideoProperty paths
+  mapM_ extractSubtitles videoProps
+
+fetchPathsFromDirectory :: FilePath -> IO [FilePath]
+fetchPathsFromDirectory path = do
+  isExist <- doesDirectoryExist path
+  if isExist
+    then fmap appendRootPath . filterMkv . concat . toMaybe <$> fetchedPaths
+    else return []
   where
     fetchedPaths :: IO (Either EX.SomeException [FilePath])
-    fetchedPaths = putStrLn path >> EX.try (getDirectoryContents path)
+    fetchedPaths = EX.try $ getDirectoryContents path
 
     filterMkv :: [FilePath] -> [FilePath]
-    filterMkv = filter $ isExtensionOf ".mkv"
+    filterMkv = filter $ isExtensionOf "mkv"
 
     appendRootPath :: FilePath -> FilePath
     appendRootPath a = path <> "/" <> a
 
 makeVideoProperty :: FilePath -> IO (Maybe VideoProperty)
 makeVideoProperty path = do
-  result <- toMaybe <$> infoString
-  return $ fmap (VideoProperty path) . parse' . T.pack =<< result
+  result <- do
+    isExist <- doesFileExist path
+    if isExist && "mkv" `isExtensionOf` path
+      then toMaybe <$> infoString
+      else return Nothing
+  return $ fmap (VideoProperty path) . parseMkvString . T.pack =<< result
   where
     infoString :: IO (Either EX.SomeException String)
     infoString = EX.try $ readProcess programPath ["-i", path] ""
 
-    parse' = toMaybe . parseOnly (many1 $ videoInfoParser <* endOfLine)
+    parseMkvString :: T.Text -> Maybe [VideoInfo]
+    parseMkvString = toMaybe . parseOnly (many1 $ videoInfoParser <* endOfLine)
+
     programPath = "/home/faris/.nix-profile/bin/mkvmerge"
 
 extractSubtitles :: VideoProperty -> IO ()
@@ -104,21 +132,21 @@ extractSubtitles videoProp = mapM_ extract
           srtPath = if idx == 0
             then replaceExtension filePath "srt"
             else replaceExtension filePath $ show idx <> ".srt"
-       in do
-         isExist <- doesFileExist srtPath
-         if isExist
-           then return ()
-           else void $ (EX.try $ callProcess programPath
-                         [ "tracks"
-                         , filePath
-                         , strTrackId <> ":" <> srtPath
-                         ] :: IO (Either EX.SomeException ()))
+      in do
+        isExist <- doesFileExist srtPath
+        if isExist
+          then return ()
+          else void $ (EX.try $ callProcess programPath
+                        [ "tracks"
+                        , filePath
+                        , strTrackId <> ":" <> srtPath
+                        ] :: IO (Either EX.SomeException ()))
 
     asSubtitlesVideoTrack :: VideoInfo -> Maybe VideoTrack
     asSubtitlesVideoTrack (VideoInfoTrack videoTrack) =
       case videoTrackKind videoTrack of
         Subtitles -> Just videoTrack
-        _ -> Nothing
+        _         -> Nothing
     asSubtitlesVideoTrack _ = Nothing
 
 videoInfoParser :: Parser VideoInfo
@@ -233,6 +261,3 @@ isCloseBracket = (== ')')
 
 toMaybe :: Either a b -> Maybe b
 toMaybe = either (const Nothing) Just
-
-exampleTargetFolder :: String
-exampleTargetFolder = "/home/faris/Videos/Anime/Black Clover/Qwe"
