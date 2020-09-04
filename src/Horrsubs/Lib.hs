@@ -76,7 +76,7 @@ fetchMkvPaths path = fmap appendRootPath
     filterMkv = filter $ isExtensionOf ".mkv"
 
     appendRootPath :: FilePath -> FilePath
-    appendRoootPath a = path <> "/" <> a
+    appendRootPath a = path <> "/" <> a
 
 makeVideoProperty :: FilePath -> IO (Maybe VideoProperty)
 makeVideoProperty path = do
@@ -91,21 +91,28 @@ makeVideoProperty path = do
 
 extractSubtitles :: VideoProperty -> IO ()
 extractSubtitles videoProp = mapM_ extract
+  $ zipWith (,) [0..]
   $ catMaybes
   $ fmap asSubtitlesVideoTrack
   $ videoPropertyInfos videoProp
   where
-    extract :: VideoTrack -> IO ()
-    extract videoTrack =
+    extract :: (Integer, VideoTrack) -> IO ()
+    extract (idx, videoTrack) =
       let filePath = videoPropertyPath videoProp
           programPath = "/home/faris/.nix-profile/bin/mkvextract"
           strTrackId = show $ unVideoTrackId $ videoTrackId videoTrack
-          srtPath = replaceExtension filePath "srt"
-       in void $ (EX.try $ callProcess programPath
-            [ "tracks"
-            , filePath
-            , strTrackId <> ":" <> srtPath
-            ] :: IO (Either EX.SomeException ()))
+          srtPath = if idx == 0
+            then replaceExtension filePath "srt"
+            else replaceExtension filePath $ show idx <> ".srt"
+       in do
+         isExist <- doesFileExist srtPath
+         if isExist
+           then return ()
+           else void $ (EX.try $ callProcess programPath
+                         [ "tracks"
+                         , filePath
+                         , strTrackId <> ":" <> srtPath
+                         ] :: IO (Either EX.SomeException ()))
 
     asSubtitlesVideoTrack :: VideoInfo -> Maybe VideoTrack
     asSubtitlesVideoTrack (VideoInfoTrack videoTrack) =
@@ -226,18 +233,6 @@ isCloseBracket = (== ')')
 
 toMaybe :: Either a b -> Maybe b
 toMaybe = either (const Nothing) Just
-
--- main :: IO ()
--- main = do
---   dirPath <- mappend "/" <$> getLine
---   paths <- fmap (mappend dirPath) <$> getDirectoryContents dirPath
---   pathsAndInfos <- mapM processPath paths
---   let parsed = fmap (APT.parseOnly videoInfoParser) <$> pathsAndInfos
---   mapM_ extractSrtSubtitle $ filter (isRight . snd) parsed
---   where
---     processPath path = (,)
---       <$> return path
---       <*> getMkvVideoInfo path
 
 exampleTargetFolder :: String
 exampleTargetFolder = "/home/faris/Videos/Anime/Black Clover/Qwe"

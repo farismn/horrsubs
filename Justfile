@@ -6,6 +6,9 @@ cabal-repl TARGET:
 
 repl TARGET='horrsubs': generate-cabal (cabal-repl TARGET)
 
+build:
+  nix-shell --pure shell.nix --run "cabal v2-build"
+
 hoogle:
   nix-shell --pure shell.nix --run "hoogle server"
 
