@@ -1,17 +1,48 @@
 module Horrsubs.Lib
-  ( extractVideoSubtitles
+  ( extractSubtitles
   ) where
 
 import           Control.Applicative
 import qualified Control.Exception as EX
 import           Control.Monad
 import           Data.Attoparsec.Text
+import           Data.Bool
 import           Data.Char
 import           Data.Maybe
 import qualified Data.Text as T
 import           System.Directory
 import           System.FilePath
 import           System.Process
+
+data TargetEntity = TargetFile FilePath
+                  | TargetDirectory [TargetEntity]
+                  deriving (Show)
+
+extractSubtitles :: FilePath -> IO ()
+extractSubtitles path = do
+  targetEntity <- makeTargetEntity path
+  case targetEntity of
+    Nothing -> return ()
+    Just targetEntity' -> do
+      videoProps <- makeVideoProperties targetEntity'
+      mapM_ extractSubtitlesImpl videoProps
+
+makeTargetEntity :: FilePath -> IO (Maybe TargetEntity)
+makeTargetEntity path = do
+  isFileExist <- doesFileExist path
+  if isFileExist && "mkv" `isExtensionOf` path
+    then return $ Just $ TargetFile path
+    else do
+    isDirectoryExist <- doesDirectoryExist path
+    if isDirectoryExist
+      then do
+      subPaths <- fmap (combine path) . concat . toMaybe <$> fetchedPaths
+      targetEntities <- catMaybes <$> mapM makeTargetEntity subPaths
+      return $ Just $ TargetDirectory targetEntities
+      else return Nothing
+  where
+    fetchedPaths :: IO (Either EX.SomeException [FilePath])
+    fetchedPaths = EX.try $ listDirectory path
 
 data VideoProperty = VideoProperty
   { videoPropertyPath :: FilePath
@@ -33,13 +64,15 @@ data VideoMetaData = VideoMetaData
 
 data VideoTrack = VideoTrack
   { videoTrackId :: VideoTrackId
-  , videoTrackKind :: TrackKind
+  , videoTrackKind :: VideoTrackKind
   , videoTrackFormat :: T.Text
   } deriving (Show)
 
 newtype VideoTrackId = VideoTrackId
   { unVideoTrackId :: Int
   } deriving (Show)
+
+data VideoTrackKind = Video | Audio | Subtitles deriving (Show)
 
 data VideoAttachment = VideoAttachment
   { videoAttachmentId :: Int
@@ -58,89 +91,40 @@ data VideoTrackTag = VideoTrackTag
   , videoTrackTagEntries :: Int
   } deriving (Show)
 
-data TrackKind = Video | Audio | Subtitles deriving (Show)
-
-extractVideoSubtitles :: FilePath -> IO ()
-extractVideoSubtitles filePath = do
-  isFileExist <- doesFileExist filePath
-  if isFileExist
-    then extractVideoSubtitlesFromFile filePath
-    else do
-    isDirectoryExist <- doesDirectoryExist filePath
-    if isDirectoryExist
-      then extractVideoSubtitlesFromDirectory filePath
-      else return ()
-
-extractVideoSubtitlesFromFile :: FilePath -> IO ()
-extractVideoSubtitlesFromFile filePath = do
-  videoProp <- makeVideoProperty filePath
-  case videoProp of
-    Nothing         -> return ()
-    Just videoProp' -> extractSubtitles videoProp'
-
-extractVideoSubtitlesFromDirectory :: FilePath -> IO ()
-extractVideoSubtitlesFromDirectory filePath = do
-  paths <- fetchPathsFromDirectory filePath
-  videoProps <- catMaybes <$> mapM makeVideoProperty paths
-  mapM_ extractSubtitles videoProps
-
-fetchPathsFromDirectory :: FilePath -> IO [FilePath]
-fetchPathsFromDirectory path = do
-  isExist <- doesDirectoryExist path
-  if isExist
-    then fmap appendRootPath . filterMkv . concat . toMaybe <$> fetchedPaths
-    else return []
+makeVideoProperties :: TargetEntity -> IO [VideoProperty]
+makeVideoProperties (TargetFile filePath) = do
+  mkvInfo <- fmap T.pack . toMaybe <$> infoString
+  videoPropInfos <- return $ concat $ parseMkvInfo =<< mkvInfo
+  return $ [VideoProperty filePath videoPropInfos]
   where
-    fetchedPaths :: IO (Either EX.SomeException [FilePath])
-    fetchedPaths = EX.try $ getDirectoryContents path
+    parseMkvInfo :: T.Text -> Maybe [VideoInfo]
+    parseMkvInfo a =
+      let parser = many1 $ videoInfoParser <* endOfLine
+      in toMaybe $ parseOnly parser a
 
-    filterMkv :: [FilePath] -> [FilePath]
-    filterMkv = filter $ isExtensionOf "mkv"
-
-    appendRootPath :: FilePath -> FilePath
-    appendRootPath a = path <> "/" <> a
-
-makeVideoProperty :: FilePath -> IO (Maybe VideoProperty)
-makeVideoProperty path = do
-  result <- do
-    isExist <- doesFileExist path
-    if isExist && "mkv" `isExtensionOf` path
-      then toMaybe <$> infoString
-      else return Nothing
-  return $ fmap (VideoProperty path) . parseMkvString . T.pack =<< result
-  where
     infoString :: IO (Either EX.SomeException String)
-    infoString = EX.try $ readProcess programPath ["-i", path] ""
+    infoString = EX.try $ readProcess programPath ["-i", filePath] ""
 
-    parseMkvString :: T.Text -> Maybe [VideoInfo]
-    parseMkvString = toMaybe . parseOnly (many1 $ videoInfoParser <* endOfLine)
-
+    programPath :: FilePath
     programPath = "/home/faris/.nix-profile/bin/mkvmerge"
+makeVideoProperties (TargetDirectory entities) =
+  concat <$> mapM makeVideoProperties entities
 
-extractSubtitles :: VideoProperty -> IO ()
-extractSubtitles videoProp = mapM_ extract
+extractSubtitlesImpl :: VideoProperty -> IO ()
+extractSubtitlesImpl videoProp = mapM_ extract'
   $ zipWith (,) [0..]
   $ catMaybes
   $ fmap asSubtitlesVideoTrack
   $ videoPropertyInfos videoProp
   where
-    extract :: (Integer, VideoTrack) -> IO ()
-    extract (idx, videoTrack) =
-      let filePath = videoPropertyPath videoProp
-          programPath = "/home/faris/.nix-profile/bin/mkvextract"
-          strTrackId = show $ unVideoTrackId $ videoTrackId videoTrack
-          srtPath = if idx == 0
-            then replaceExtension filePath "srt"
-            else replaceExtension filePath $ show idx <> ".srt"
-      in do
-        isExist <- doesFileExist srtPath
-        if isExist
-          then return ()
-          else void $ (EX.try $ callProcess programPath
-                        [ "tracks"
-                        , filePath
-                        , strTrackId <> ":" <> srtPath
-                        ] :: IO (Either EX.SomeException ()))
+    extract' :: (Integer, VideoTrack) -> IO ()
+    extract' (idx, videoTrack) =
+      let ext = bool (show idx <> ".srt") "srt" $ idx == 0
+          srtPath = replaceExtension filePath ext
+      in extractSubtitlesImpl' filePath srtPath videoTrack
+
+    filePath :: FilePath
+    filePath = videoPropertyPath videoProp
 
     asSubtitlesVideoTrack :: VideoInfo -> Maybe VideoTrack
     asSubtitlesVideoTrack (VideoInfoTrack videoTrack) =
@@ -148,6 +132,28 @@ extractSubtitles videoProp = mapM_ extract
         Subtitles -> Just videoTrack
         _         -> Nothing
     asSubtitlesVideoTrack _ = Nothing
+
+extractSubtitlesImpl' :: FilePath -> FilePath -> VideoTrack -> IO ()
+extractSubtitlesImpl' filePath srtPath videoTrack =
+  case videoTrackKind videoTrack of
+    Subtitles -> bool (void extract') (return ()) =<< doesFileExist srtPath
+    _         -> return ()
+  where
+    extract' :: IO (Either EX.SomeException ())
+    extract' = do
+      putStrLn $ "FILE PATH: " <> filePath
+      putStrLn $ "SRT PATH: " <> srtPath
+      EX.try $ callProcess programPath
+        [ "tracks"
+        , filePath
+        , show trackId <> ":" <> srtPath
+        ]
+
+    trackId :: Int
+    trackId = unVideoTrackId $ videoTrackId videoTrack
+
+    programPath :: FilePath
+    programPath = "/home/faris/.nix-profile/bin/mkvextract"
 
 videoInfoParser :: Parser VideoInfo
 videoInfoParser = choice
@@ -176,7 +182,7 @@ videoTrackParser = do
   string "Track" >> skipSpace >> string "ID" >> skipSpace
   id' <- VideoTrackId . digitToInt <$> digit
   skip isColon >> skipSpace
-  kind <- trackKindParser
+  kind <- videoTrackKindParser
   skipSpace >> skip isOpenBracket
   format <- takeTill isCloseBracket
   skip isCloseBracket
@@ -238,8 +244,8 @@ videoTrackTagParser = do
   entry <- digitToInt <$> digit
   skipSpace >> string "entries" >> return (VideoTrackTag id' entry)
 
-trackKindParser :: Parser TrackKind
-trackKindParser
+videoTrackKindParser :: Parser VideoTrackKind
+videoTrackKindParser
   =   (string "video" >> return Video)
   <|> (string "audio" >> return Audio)
   <|> (string "subtitles" >> return Subtitles)

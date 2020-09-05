@@ -5,7 +5,7 @@ import System.Directory
 import System.Environment
 
 main :: IO ()
-main = extractVideoSubtitles =<< extractDirPath =<< getArgs
+main = extractSubtitles =<< extractDirPath =<< getArgs
   where
     extractDirPath :: [String] -> IO FilePath
     extractDirPath [] = getCurrentDirectory
